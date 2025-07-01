@@ -1,5 +1,3 @@
-
-import tkinter
 from pynput.mouse import *
 #import mouse
 mouse=Controller()
