@@ -2,51 +2,19 @@ import screen_area
 import cv2
 import numpy as np
 import pyautogui
-from PIL import ImageGrab,Image
+from PIL import ImageGrab
 from time import sleep
 #import pyttsx3
 import pytesseract
 from pytesseract import image_to_string
 from pynput.mouse import Controller,Button
-#from matplotlib import pyplot as plt
-import pyperclip
-import os
-import random
-from datetime import datetime
+
 import json
 pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe'
 mouse=Controller()
 
 
 
-def find_img(template_path, screen, color, grid_size, char, matrix, threshold, image=None):
-    template = cv2.imread(template_path, cv2.IMREAD_UNCHANGED)
-    h, w = template.shape[:2]
-    template = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
-    Y, X = cap.shape[:2]  
-    cell_width, cell_height = X // grid_size[0], Y // grid_size[1]
-    result = cv2.matchTemplate(screen, template, cv2.TM_CCOEFF_NORMED)
-    locations = np.where(result >= threshold)
-    locations = list(zip(*locations[::-1]))
-
-   # Filter out duplicate detections using non-maximum suppression
-    filtered_locations = []
-    for loc in locations:
-        if all(abs(loc[0] - prev_loc[0]) > w // 2 or abs(loc[1] - prev_loc[1]) > h // 2 for prev_loc in filtered_locations):
-            filtered_locations.append(loc)
-
-    # Draw rectangles around filtered detected areas
-    all_loc = filtered_locations[::]
-    if filtered_locations:
-        for loc in filtered_locations:
-            top_left = loc
-            bottom_right = (top_left[0] + w, top_left[1] + h)
-            midle = (top_left[0] + w//2, top_left[1] + h//2)
-            row, col = midle[1] // cell_height, midle[0] // cell_width
-            if 0 <= row < grid_size[1] and 0 <= col < grid_size[0]:
-                matrix[row][col] = char
-            cv2.rectangle(image, top_left, bottom_right, color, 2)
-    return all_loc, screen, image
 
 def detect_numbers_by_blobs(screen, grid_size, matrix):
 
@@ -117,8 +85,8 @@ def divide_and_highlight_nums(img, rows, cols):
             for name, bgr in colour_data.items():
                 # Convert BGR to HSV for comparison
                 hsv_color = cv2.cvtColor(np.uint8([[bgr]]), cv2.COLOR_BGR2HSV)[0][0]
-                lower = np.clip(hsv_color - np.array([1, 1, 1]), 0, 255)
-                upper = np.clip(hsv_color + np.array([1, 1, 1]), 0, 255)
+                lower = np.clip(hsv_color - np.array([10, 10, 10]), 0, 255)
+                upper = np.clip(hsv_color + np.array([10, 10, 10]), 0, 255)
                 mask = cv2.inRange(cell_hsv, lower, upper)
                 if np.count_nonzero(mask) == mask.size:  # Only if the color fills the cell
                     found_color = name
@@ -325,7 +293,7 @@ if a:
 else:
     cordinate =   [953, 390, 1853, 870] # [1097, 356, 1781, 888]    #[1065, 310, 1816, 935]
 print(cordinate)
-cols, rows =  24,20 #18,14 #10,8 #24,20
+cols, rows =  map(int,input('enter number of columns and rows format(c r):-').split()) #18,14 #10,8 #24,20
 width = cordinate[2] - cordinate[0]
 height = cordinate[3] - cordinate[1]
 
