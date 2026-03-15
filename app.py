@@ -3,8 +3,10 @@ import cv2
 import numpy as np
 import pyautogui
 from PIL import ImageGrab
+from pynput import keyboard
 from time import sleep
 #import pyttsx3
+import statistics
 import pytesseract
 from pytesseract import image_to_string
 from pynput.mouse import Controller,Button
@@ -69,25 +71,28 @@ def load_colour_data(website_name, json_path="colour_data.json"):
     return site_data
 
 
-def divide_and_highlight_nums(img, rows, cols):
-    h, w, _ = img.shape
-    cell_h, cell_w = h // rows, w // cols
+def divide_and_highlight_nums(img, vlines, hlines, matrix):
 
-    # Define green color range in HSV
+    #h, w, _ = img.shape
+    #cell_h = cell_w = cell_size
+
+    # Define green color range in HSV    
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-
-    for i in range(rows):
-        for j in range(cols):
-            y1, y2 = i * cell_h+4, (i + 1) * cell_h-4
-            x1, x2 = j * cell_w+4, (j + 1) * cell_w-4
+    for i in range(len(hlines)-1):
+        for j in range(len(vlines)-1):
+            y1, y2 = hlines[i]+4, hlines[i+1]-4
+            x1, x2 = vlines[j]+4, vlines[j+1]-4
             cell_hsv = hsv[y1:y2, x1:x2]
             found_color = None
             for name, bgr in colour_data.items():
                 # Convert BGR to HSV for comparison
                 hsv_color = cv2.cvtColor(np.uint8([[bgr]]), cv2.COLOR_BGR2HSV)[0][0]
-                lower = np.clip(hsv_color - np.array([10, 10, 10]), 0, 255)
-                upper = np.clip(hsv_color + np.array([10, 10, 10]), 0, 255)
-                mask = cv2.inRange(cell_hsv, lower, upper)
+                lower = np.clip(hsv_color - np.array([5, 5, 5]), 0, 255)
+                upper = np.clip(hsv_color + np.array([5, 5, 5]), 0, 255)
+                try:
+                    mask = cv2.inRange(cell_hsv, lower, upper)
+                except:
+                    print(x1,x2,y1,y2, cell_hsv.shape)
                 if np.count_nonzero(mask) == mask.size:  # Only if the color fills the cell
                     found_color = name
                     break
@@ -98,18 +103,16 @@ def divide_and_highlight_nums(img, rows, cols):
                 if found_color in ("beige1", "beige2"):
                     # For beige colors, use a different color for highlighting
                     color_bgr = [0, 0, 0]
-                    matrix[i][j] = -2  # Mark as dug area
+                    try:
+                        matrix[i][j] = -2  # Mark as dug area
+                    except:
+                        print(i,j)
+                    #continue
                     
                 else:
                     color_bgr = colour_data[found_color].tolist()
-                    try:
-                        matrix[i][j] = int(found_color) 
-                    except ValueError:
-                        print(i,j, found_color)
-                        raise SystemExit("Exiting as requested.")
-                cv2.rectangle(img, (x1, y1), (x2, y2), color_bgr, 4)
-                
-
+                    matrix[i][j] = int(found_color) 
+                cv2.rectangle(img, (x1-2, y1-2), (x2-2, y2-2), color_bgr, 2)
     return img
 
 
@@ -121,7 +124,112 @@ def get_screen(cordinate):
     return  image
 
 
+def cluster_sorted(arr, max_gap):
+    if not arr:
+        return []
 
+    clusters = [[arr[0]]]
+
+    for i in range(1, len(arr)):
+        if arr[i] - arr[i-1] <= max_gap:
+            clusters[-1].append(arr[i])
+        else:
+            clusters.append([arr[i]])
+    for i in range(len(clusters)):
+        clusters[i] = round(statistics.median(clusters[i]))
+    return clusters
+def get_lines(img):
+    output = img
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(gray, 0, 10)
+    lines = cv2.HoughLinesP(
+        edges,
+        rho=1,
+        theta=np.pi/180,
+        threshold=10,
+        minLineLength=25,
+    )
+    vertical_lines = []
+    if lines is not None: 
+        for line in lines:
+            x1, y1, x2, y2 = line[0]
+            if abs(x1 - x2) < 5:   # nearly vertical
+                vertical_lines.append(x1)
+    vertical_lines = sorted(vertical_lines)
+    vertical_lines = cluster_sorted(vertical_lines, max_gap=10)
+    vertical_mode_lines = []
+    distances = []
+    for i in range(len(vertical_lines) - 1):
+        d = vertical_lines[i+1] - vertical_lines[i]
+        if d > 10:  # ignore duplicates
+            distances.append(d)    
+    try:
+        vcell_size = int(statistics.mode(distances))
+    except:
+        return -1, -1, -1
+    for i in range(len(vertical_lines)):
+        a = False
+        for j in range(i,-1, -1):
+            d = vertical_lines[i] - vertical_lines[j]
+            if vcell_size - 5 < d < vcell_size +5:
+                a=True
+                break
+            elif d > vcell_size:
+                break
+        for j in range(i,len(vertical_lines)):
+            d = vertical_lines[j] - vertical_lines[i]
+            if vcell_size - 5 < d < vcell_size +5:
+                a=True
+                break
+            elif d > vcell_size:
+                break
+        if a:
+            vertical_mode_lines.append(vertical_lines[i])
+
+
+
+    horizontal_lines = []
+    if lines is not None: 
+        for line in lines:
+            x1, y1, x2, y2 = line[0]
+            if abs(y1 - y2) < 5:   # nearly vertical
+                horizontal_lines.append(y1)
+    horizontal_lines = sorted(horizontal_lines)
+    horizontal_lines = cluster_sorted(horizontal_lines, max_gap=10)
+    distances = []
+    for i in range(len(horizontal_lines) - 1):
+        d = horizontal_lines[i+1] - horizontal_lines[i]
+        if d > 10:  # ignore duplicates
+            distances.append(d)    
+    try:
+        hcell_size = int(statistics.mode(distances))
+    except:
+        return -1, -1, -1
+    horizontal_mode_lines = []
+    for i in range(len(horizontal_lines)):
+        a = False
+        for j in range(i,-1, -1):
+            d = horizontal_lines[i] - horizontal_lines[j]
+            if hcell_size - 5 < d < hcell_size +5:
+                a=True
+                break
+            elif d > hcell_size:
+                break
+        for j in range(i,len(horizontal_lines)):
+            d = horizontal_lines[j] - horizontal_lines[i]
+            if hcell_size - 5 < d < hcell_size +5:
+                a=True
+                break
+            elif d > hcell_size:
+                break
+        if a:
+            horizontal_mode_lines.append(horizontal_lines[i])
+    for x1 in vertical_mode_lines:
+        cv2.line(output, (int(x1), 0), (int(x1), int(img.shape[0])), (0,255,0), 2)
+    for y1 in horizontal_mode_lines:
+        cv2.line(output, (0, int(y1)), (int(img.shape[1]), int(y1)), (0,255,0), 2)
+    if vcell_size -2<hcell_size < vcell_size +2:
+        return round((hcell_size+vcell_size)/2), vertical_mode_lines, horizontal_mode_lines
 
 
 
@@ -130,6 +238,7 @@ def place_new_flag(matrix):
     directions = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
     found=False
     probable_mines = {}
+    undiged_srounding = {}
     for i in range(rows):
         for j in range(cols):
             if matrix[i][j] > 0:  # Dug cell with a number
@@ -151,23 +260,29 @@ def place_new_flag(matrix):
                     if flagged_count + len(undug_cells) == num_mines:
                         for (fx, fy) in undug_cells:
                             matrix[fx][fy] = -4  # Place a new flag
-                            found = True
+                        found = True
                     elif flagged_count == num_mines:
                         for fx, fy in undug_cells:
                             matrix[fx][fy] = -3
-                            found = True
+                        found = True
                     elif not found:
-                        probable_mines[(i,j)] = undug_cells
+                        for l,q in undug_cells:
+                            if probable_mines.get(l*cols+q):
+                                probable_mines[l*cols+q].append(i*cols+j)
+                            else:
+                                probable_mines[l*cols+q] = [i*cols+j]  
+                        undiged_srounding[((i*cols+j), num_mines-flagged_count)] = [p*cols+q for p,q in undug_cells]
 
 
     if not found and probable_mines:
-        for i in matrix:
-            print(i)
+        #print(probable_mines)
+        print('\n\n\n\n constraint -> cels[]',undiged_srounding)
+        print(independent_chain(undiged_srounding))
         input('Press Enter to continue...')
 
         for (i, j), undug_cells in probable_mines.items():
             for fx, fy in undug_cells:
-                matrix[fx][fy] = -1  # Tentatively flagging a mine
+                matrix[fx][fy] = -4  # Tentatively flagging a mine
                 flagged_count = 0
                 temp_undug_cells = []
 
@@ -218,7 +333,45 @@ def place_new_flag(matrix):
 
 
 
+def independent_chain(nodes):
+    conection=[]
+    visited = []
+    for key in nodes:
+         for i,v in enumerate(nodes[key]):
+            if v not in visited:
+                visited.append(v)
+                if i > 0:
+                    conection.append((nodes[key][i-1], nodes[key][i]))
+    adg_matrix = {i:-1 for i in visited}
+    for c in conection:
+        n = c[0]
+        while adg_matrix[n] != -1:
+            n = adg_matrix[n]
+        adg_matrix[n] = c[1]
+        
+    print('conneton', conection)
+    print('adg_matrix', adg_matrix)
+    groups = [[]]
+    visited = []
+    for n in adg_matrix:
+        if n in visited:
+            continue
+        while True:
+            visited.append(n)
+            if adg_matrix[n] == -1:
+                groups[-1].append(n)
+                groups.append([])
+                break
+            else:
+                groups[-1].append(n)
+                n = adg_matrix[n]
+    print('groups', groups)
 
+        
+                         
+
+                 
+                 
 
 
 def find_next_dig(matrix):
@@ -229,7 +382,7 @@ def find_next_dig(matrix):
     # Check every cell in the grid
     for row in range(height):
         for col in range(width):
-            if matrix[row][col] > 0:  # If it's a number cell
+            if checked_matrix[row][col] == 0 and matrix[row][col] > 0:  # If it's a number cell
                 covered_neighbors = []
                 mine_count = 0
 
@@ -239,14 +392,17 @@ def find_next_dig(matrix):
                         nr, nc = row + dr, col + dc
                         if 0 <= nr < height and 0 <= nc < width:
                             if matrix[nr][nc] == 0:  # Covered cell
+                                
                                 covered_neighbors.append((nr, nc))
-                            elif matrix[nr][nc] == -1:  # Flagged mine
+                            elif matrix[nr][nc] == -1 or matrix[nr][nc] == -4:  # Flagged mine
                                 mine_count += 1
                 
                 # If the number of flagged mines matches the number, dig remaining covered cells
                 if mine_count == matrix[row][col]:
                     for r,c in covered_neighbors:
                         matrix[r][c] = -3
+                        print(r,c, row, col, matrix[row][col])
+                    checked_matrix[row][col] = 1
                     safe_moves.extend(covered_neighbors)
     return safe_moves, matrix  # Returns a list of (row, col) positions to dig next
 
@@ -286,58 +442,163 @@ def do_dig(matrix, cordinate, grid_size):
                 pyautogui.click(j*cell_height+ cell_height//2+cordinate[0], i*cell_width + cell_width//2 + cordinate[1], button='left')
     return matrix
 
-print("scroll mouse to get screen cordinate")
-a=1
-if a:
-    cordinate = screen_area.get_cordinate()
-else:
-    cordinate =   [953, 390, 1853, 870] # [1097, 356, 1781, 888]    #[1065, 310, 1816, 935]
-print(cordinate)
-cols, rows =  map(int,input('enter number of columns and rows format(c r):-').split()) #18,14 #10,8 #24,20
-width = cordinate[2] - cordinate[0]
-height = cordinate[3] - cordinate[1]
 
-# Calculate the nearest greater width and height divisible by cols and rows
-new_width = ((width) // cols) * cols
-new_height = ((height) // rows) * rows
-
-# Adjust the bottom-right coordinates
-cordinate[2] = cordinate[0] + new_width
-cordinate[3] = cordinate[1] + new_height
-
-print(f"Adjusted Cordinate: {cordinate}")
 
 website_name = "google_minesweeper"
 colour_data = load_colour_data(website_name)
 x=0
+
+# -------- control flags --------
+running = True
+paused = True
+
+# -------- keyboard handler --------
+def on_press(key):
+    global running, paused
+    try:
+        if key.char == 'q':   # stop program
+            running = False
+            return False      # stop listener
+
+        if key.char == 'p':   # pause / resume toggle
+            paused = not paused
+            print("Paused" if paused else "Resumed")
+
+    except AttributeError as e:
+        pass
+def non_zero_change(matrix_queue:list, matrix_ind:int):
+    # Need at least one previous matrix
+    if matrix_ind <= 0 or matrix_ind >= len(matrix_queue):
+        return False
+
+    prev = np.array(matrix_queue[matrix_ind - 1])
+    curr = np.array(matrix_queue[matrix_ind])
+
+    # Shape mismatch = definitely changed
+    if prev.shape != curr.shape:
+        return True
+
+    # Compare only positions where at least one is non-zero
+    mask = (prev != 0)
+
+    return np.any(prev[mask] != curr[mask])
+# -------- start keyboard listener (runs in background thread) --------
+
+print("scroll mouse to get screen cordinate")
+a=0
+if a:
+    cordinate = [0,0,100,100]
+    cordinate = screen_area.get_cordinate(cordinate)
+else:
+    cordinate =  [1036, 296, 1820, 957] # [1106, 376, 1743, 866] #[1097, 356, 1765, 888]    # 
+
+#cols, rows =  24, 20 #18,14 #24,20 #18,14 #map(int,input('enter number of columns and rows format(c r):-').split()) #10,8 #
+
+
+
+
+image = get_screen(cordinate)
+
+cell_size, v_lines, h_lines = get_lines(image)
+if cell_size ==-1:
+    raise ValueError('no roi found')
+cordinate[2] += cell_size-((cordinate[2]-cordinate[0]) - v_lines[-1])
+cordinate[3] += cell_size-((cordinate[3]-cordinate[1]) - h_lines[-1])
+cordinate[0] -= cell_size-v_lines[0]
+cordinate[1] -= cell_size-h_lines[0]
+
+
+width = cordinate[2] - cordinate[0]
+height = cordinate[3] - cordinate[1] 
+rows = round((height)/cell_size)
+cols = round((width)/cell_size)
+print('cordinates:- ', cordinate, rows, cols, len(v_lines), len(h_lines))
+listener = keyboard.Listener(on_press=on_press)
+listener.start()
+checked_matrix = [[0]*cols for i in range(rows)]
+matrix_queue = [[[0]*cols for i in range(rows)] for j in range(3)]
+matrix_ind = 2
+recovery = 0
+window_name = "gray Capture"
+
+# create window once
+cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+cv2.setWindowProperty(window_name, cv2.WND_PROP_TOPMOST, 1)
+cv2.imshow(window_name, image)
 while True:
-    x+=1
-    #a=input("enter to next")
-    matrix = [[0]*cols for i in range(rows) ]
     image = get_screen(cordinate)
-    #cv2.imshow('gray Capture2', cap2)
-    image = divide_and_highlight_nums(image, rows, cols)
-    matrix, found = place_new_flag(matrix)
-    out_image = grafic_output(image, (cols, rows), matrix)
-    if x%5 == -1:
-        sleep(5)
-    if x%20 ==-1:
-        input('Press Enter to continue...')
-    cv2.imshow('gray Capture', out_image)
-    #for row in matrix:
-    #        print(row)
+    matrix_ind = (matrix_ind +1) % len(matrix_queue)
+    matrix_queue[matrix_ind] = [[0]*cols for i in range(rows)]
+    if x %20 == 0:
+        cell_size, v_lines, h_lines = get_lines(image)
+        if v_lines[0] >cell_size-5:
+            v_lines.insert(0, 0)
+        if image.shape[1] - v_lines[-1] > cell_size-5:
+            v_lines.append(image.shape[1])
+        if h_lines[0] -0 >cell_size-5:
+            h_lines.insert(0, 0)
+        if image.shape[0] - h_lines[-1] > cell_size-5:
+            h_lines.append(image.shape[0])
+    else:
+        for x1 in v_lines:
+            cv2.line(image, (int(x1), 0), (int(x1), int(image.shape[0])), (0,255,0), 2)
+        for y1 in h_lines:
+            cv2.line(image, (0, int(y1)), (int(image.shape[1]), int(y1)), (0,255,0), 2)
+    #print(v_lines)
+    try:
+        image = divide_and_highlight_nums(image, v_lines, h_lines, matrix_queue[matrix_ind])
+    except Exception as e:
+        if recovery > 10:
+            print(v_lines, h_lines, cell_size, rows, cols)
+            print('exit after 10 recovery',e)
+            cv2.imwrite('recovery.png', image)
+            break
+        recovery += 1
+        sleep(0.2)
+        continue
+    nch = non_zero_change(matrix_queue, matrix_ind)
+    if nch == True:
+        if recovery > 5:
+            print('exit after 5 recovery')
+            break
+        recovery += 1
+        sleep(0.1)
+        continue
+
+    recovery = 0
+
+
+
+    # show frame (window already topmost)
+    #cv2.imshow(window_name, out_image)p
+
+    matrix_queue[matrix_ind], found = place_new_flag(matrix_queue[matrix_ind])
+    loc, matrix_queue[matrix_ind] = find_next_dig(matrix_queue[matrix_ind])
+
+    image = grafic_output(image, (cols, rows), matrix_queue[matrix_ind])
+    
+    rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    cv2.imshow(window_name, rgb_image)
     if cv2.waitKey(1) & 0xFF == ord('q'):
-        for row in matrix:
+        print('asdasd')
+        for row in matrix_queue[matrix_ind]:
             print(row)
         break
-    #resize_ratio = 1
-    matrix = place_flag(matrix, cordinate, (cols, rows))
-    loc, matrix = find_next_dig(matrix)
-    matrix = do_dig(matrix, cordinate, (cols, rows))
+    if paused:
+        continue
 
+    
+    
+    matrix_queue[matrix_ind] = place_flag(matrix_queue[matrix_ind], cordinate, (cols, rows))
+    matrix_queue[matrix_ind] = do_dig(matrix_queue[matrix_ind], cordinate, (cols, rows))
+    
+
+
+    x += 1
     sleep(0.5)
 
-#cv2.destroyAllWindows()
+cv2.destroyAllWindows()
+
 
 
 
