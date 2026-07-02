@@ -12,6 +12,7 @@ from pytesseract import image_to_string
 from pynput.mouse import Controller,Button
 
 import json
+import argparse
 pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe'
 mouse=Controller()
 
@@ -275,97 +276,140 @@ def place_new_flag(matrix):
 
 
     if not found and probable_mines:
-        #print(probable_mines)
-        print('\n\n\n\n constraint -> cels[]',undiged_srounding)
-        print(independent_chain(undiged_srounding))
-        input('Press Enter to continue...')
+        constraints = build_constraints(undiged_srounding)
+        components = group_constraints(constraints)
 
-        for (i, j), undug_cells in probable_mines.items():
-            for fx, fy in undug_cells:
-                matrix[fx][fy] = -4  # Tentatively flagging a mine
-                flagged_count = 0
-                temp_undug_cells = []
+        definite_mines = set()
+        definite_safe = set()
+        for component in components:
+            mines, safe = solve_component(component)
+            definite_mines |= mines
+            definite_safe |= safe
 
-                # Count flags and gather undug cells around (i, j)
-                for dx, dy in directions:
-                    ni, nj = i + dx, j + dy
-                    if 0 <= ni < rows and 0 <= nj < cols:
-                        if matrix[ni][nj] == -1 or matrix[ni][nj] == -4:  # Already flagged
-                            flagged_count += 1
-                        elif matrix[ni][nj] == 0:  # Undug
-                            temp_undug_cells.append((ni, nj))
+        if definite_mines or definite_safe:
+            for cell in definite_mines:
+                i, j = divmod(cell, cols)
+                matrix[i][j] = -4  # Definite mine -> flag it
+            for cell in definite_safe:
+                i, j = divmod(cell, cols)
+                matrix[i][j] = -3  # Definite safe -> dig it
+            found = True
 
-                # If all required flags are placed, mark the rest as safe (-3)
-                if flagged_count == matrix[i][j]:
-                    for px, py in temp_undug_cells:
-                        matrix[px][py] = -3  # Safe to dig
-                else:
-                    continue
-
-                # Double-check surrounding flags for other probable mines
-                for (ix, jx), other_undug_cells in probable_mines.items():
-                    flagged_count = 0
-                    undug_cells = []
-
-                    # Scan adjacent cells
-                    for dx, dy in directions:
-                        ni, nj = ix + dx, jx + dy
-                        if 0 <= ni < rows and 0 <= nj < cols:
-                            if matrix[ni][nj] == -1 or matrix[ni][nj] == -4:  # Already flagged
-                                flagged_count += 1
-                            elif matrix[ni][nj] == 0:  # Undug
-                                undug_cells.append((ni, nj))
-
-                    # If flags + undug cells can't meet the requirement, unflag probable mine
-                    if flagged_count + len(undug_cells) < matrix[ix][jx]:
-                        print(f"Unflagging probable mine at: ({fx}, {fy})")
-                        matrix[fx][fy] = -3  # Mark as likely safe
-                        break
-                else:
-                    matrix[fx][fy] = 0  # Reset the flagged cell
-
-                # Reset temporary undug cells
-                for px, py in temp_undug_cells:
-                    matrix[px][py] = 0
-
-    
     return matrix, found
 
 
 
-def independent_chain(nodes):
-    conection=[]
-    visited = []
-    for key in nodes:
-         for i,v in enumerate(nodes[key]):
-            if v not in visited:
-                visited.append(v)
-                if i > 0:
-                    conection.append((nodes[key][i-1], nodes[key][i]))
-    adg_matrix = {i:-1 for i in visited}
-    for c in conection:
-        n = c[0]
-        while adg_matrix[n] != -1:
-            n = adg_matrix[n]
-        adg_matrix[n] = c[1]
-        
-    print('conneton', conection)
-    print('adg_matrix', adg_matrix)
-    groups = [[]]
-    visited = []
-    for n in adg_matrix:
-        if n in visited:
-            continue
-        while True:
-            visited.append(n)
-            if adg_matrix[n] == -1:
-                groups[-1].append(n)
-                groups.append([])
-                break
-            else:
-                groups[-1].append(n)
-                n = adg_matrix[n]
-    print('groups', groups)
+def build_constraints(undiged_srounding):
+    """
+    Convert the raw {(numbered_cell, remaining_mines): [undug_cell_indices]} dict
+    produced in place_new_flag into a clean list of (cells, mine_count) constraints,
+    where `cells` is a frozenset of flattened undug-cell indices that must together
+    contain exactly `mine_count` mines.
+    """
+    constraints = []
+    for (_num_cell, remaining_mines), cells in undiged_srounding.items():
+        cell_set = frozenset(cells)
+        if cell_set:
+            constraints.append((cell_set, remaining_mines))
+    return constraints
+
+
+def group_constraints(constraints):
+    """
+    Split constraints into independent connected components using union-find on
+    shared cells. Constraints that don't share any cell can't influence each
+    other, so solving them separately keeps each CSP small and fast.
+    """
+    parent = {}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(x, y):
+        rx, ry = find(x), find(y)
+        if rx != ry:
+            parent[ry] = rx
+
+    for cells, _ in constraints:
+        for c in cells:
+            parent.setdefault(c, c)
+
+    for cells, _ in constraints:
+        cell_list = list(cells)
+        for i in range(1, len(cell_list)):
+            union(cell_list[0], cell_list[i])
+
+    groups = {}
+    for cells, mine_count in constraints:
+        root = find(next(iter(cells)))
+        groups.setdefault(root, []).append((cells, mine_count))
+
+    return list(groups.values())
+
+
+def solve_component(component_constraints, max_vars=25):
+    """
+    Backtracking CSP solve for one connected group of constraints.
+    Each variable (undug cell) is assigned 0 (safe) or 1 (mine). A partial
+    assignment is pruned as soon as any fully-assigned constraint is violated.
+    Returns (definite_mines, definite_safe): the cell indices that hold the
+    same value across every valid solution -- i.e. what we can act on with
+    certainty. Cells that vary between solutions are left alone (unknown).
+    """
+    variables = sorted({c for cells, _ in component_constraints for c in cells})
+    n = len(variables)
+
+    # Guard against combinatorial blowup on large open components.
+    if n == 0 or n > max_vars:
+        return set(), set()
+
+    var_index = {v: i for i, v in enumerate(variables)}
+
+    # Check each constraint as soon as its last (highest-index) variable is set,
+    # so invalid branches get cut off early instead of only at full depth.
+    constraints_by_last_var = {}
+    for cells, mine_count in component_constraints:
+        positions = sorted(var_index[c] for c in cells)
+        constraints_by_last_var.setdefault(positions[-1], []).append((positions, mine_count))
+
+    solutions = []
+    assignment = [None] * n
+
+    def backtrack(pos):
+        if pos == n:
+            solutions.append(assignment.copy())
+            return
+        for value in (0, 1):
+            assignment[pos] = value
+            ok = True
+            for positions, mine_count in constraints_by_last_var.get(pos, []):
+                if sum(assignment[p] for p in positions) != mine_count:
+                    ok = False
+                    break
+            if ok:
+                backtrack(pos + 1)
+        assignment[pos] = None
+
+    backtrack(0)
+
+    if not solutions:
+        # Contradiction in the constraints (shouldn't normally happen with
+        # correct board data) -- nothing safe to conclude, so back off.
+        return set(), set()
+
+    definite_mines = set()
+    definite_safe = set()
+    for i, var in enumerate(variables):
+        values = {sol[i] for sol in solutions}
+        if values == {1}:
+            definite_mines.add(var)
+        elif values == {0}:
+            definite_safe.add(var)
+
+    return definite_mines, definite_safe
 
         
                          
@@ -443,6 +487,14 @@ def do_dig(matrix, cordinate, grid_size):
     return matrix
 
 
+# -------- command-line arguments --------
+parser = argparse.ArgumentParser(description="Minesweeper solver")
+parser.add_argument(
+    '--a', type=int, default=1, choices=[0, 1],
+    help="1 = auto-detect screen coordinates via screen_area.get_cordinate (default), "
+         "0 = use the hardcoded fallback coordinate"
+)
+args = parser.parse_args()
 
 website_name = "google_minesweeper"
 colour_data = load_colour_data(website_name)
@@ -485,7 +537,7 @@ def non_zero_change(matrix_queue:list, matrix_ind:int):
 # -------- start keyboard listener (runs in background thread) --------
 
 print("scroll mouse to get screen cordinate")
-a=0
+a = args.a
 if a:
     cordinate = [0,0,100,100]
     cordinate = screen_area.get_cordinate(cordinate)
@@ -598,7 +650,3 @@ while True:
     sleep(0.5)
 
 cv2.destroyAllWindows()
-
-
-
-
